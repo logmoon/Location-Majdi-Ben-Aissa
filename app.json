@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "Location Majdi Ben Aissa",
+    "slug": "LocationMajdiBenAissa",
+    "version": "1.3.0",
+    "updates": {
+      "url": "https://u.expo.dev/cf1a7873-de68-4b76-9602-7958bb489c6d",
+      "fallbackToCacheTimeout": 3000,
+      "checkAutomatically": "ON_LOAD"
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "location-majdi-ben-aissa",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "com.logmoon.LocationMajdiBenAissa"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "cf1a7873-de68-4b76-9602-7958bb489c6d"
+      }
+    }
+  }
+}

@@ -1,0 +1,175 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'supabase/**.sql'
+      - 'supabase/functions/**'
+      - '.gitignore'
+      - '.vscode/**'
+  # Allow manual re-runs from the GitHub Actions UI.
+  # Optionally pass build_type=native to force the native build path.
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build type: "native" to force a native build, leave empty for JS-only'
+        required: false
+        default: ''
+
+jobs:
+  # ─── Run tests first — blocks all downstream jobs on failure ────────────────
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --ci --runInBand
+
+  # ─── Detect what kind of update this is ─────────────────────────────────────
+  detect:
+    name: Detect update type
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      is_native: ${{ steps.check.outputs.is_native }}
+    steps:
+      - name: Check commit message for [native] tag
+        id: check
+        run: |
+          # On workflow_dispatch, head_commit is null — fall back to the input parameter
+          MSG="${{ github.event.head_commit.message || '' }}"
+          INPUT="${{ github.event.inputs.build_type || '' }}"
+          if echo "$MSG" | grep -q '\[native\]' || [ "$INPUT" = "native" ]; then
+            echo "is_native=true" >> $GITHUB_OUTPUT
+            echo "🔨 Native build triggered"
+          else
+            echo "is_native=false" >> $GITHUB_OUTPUT
+            echo "⚡ JS-only update"
+          fi
+
+  # ─── JS-only update via EAS Update ──────────────────────────────────────────
+  js_update:
+    name: Push JS update (EAS Update)
+    needs: detect
+    if: needs.detect.outputs.is_native == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Push EAS Update
+        run: |
+          MSG="${{ github.event.head_commit.message || 'Manual workflow dispatch' }}"
+          eas update --branch preview --message "$MSG" --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+  # ─── Native rebuild via EAS Build + publish GitHub Release ─────────────────
+  native_build:
+    name: Native build + publish GitHub Release
+    needs: detect
+    if: needs.detect.outputs.is_native == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required to create releases and upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Build APK (EAS preview)
+        id: build
+        run: |
+          BUILD_JSON=$(eas build --profile preview --platform android --non-interactive --wait --json)
+          BUILD_URL=$(echo "$BUILD_JSON" | jq -r '.[0].artifacts.buildUrl')
+          BUILD_VERSION=$(echo "$BUILD_JSON" | jq -r '.[0].appBuildVersion')
+          if [ -z "$BUILD_URL" ] || [ "$BUILD_URL" = "null" ]; then
+            echo "❌ Failed to get build URL from EAS"
+            exit 1
+          fi
+          echo "build_url=$BUILD_URL" >> $GITHUB_OUTPUT
+          echo "build_version=$BUILD_VERSION" >> $GITHUB_OUTPUT
+          echo "✅ Build URL: $BUILD_URL  |  Version: $BUILD_VERSION"
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
+      - name: Download APK
+        run: |
+          curl -L "${{ steps.build.outputs.build_url }}" -o app-release.apk
+          echo "✅ APK downloaded"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ steps.build.outputs.build_version }}
+          name: Build ${{ steps.build.outputs.build_version }}
+          body: |
+            Native build ${{ steps.build.outputs.build_version }}
+
+            [Download APK](https://github.com/${{ github.repository }}/releases/latest/download/app-release.apk)
+          files: app-release.apk
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump minimum_build_version in Supabase
+        run: |
+          NEW_VERSION="${{ steps.build.outputs.build_version }}"
+          echo "Bumping minimum_build_version to $NEW_VERSION"
+
+          RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/app_config" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: resolution=merge-duplicates,return=representation" \
+            -d "{\"key\": \"minimum_build_version\", \"value\": \"$NEW_VERSION\"}")
+
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n-1)
+
+          echo "Response: $BODY (HTTP $HTTP_CODE)"
+
+          if [ "$HTTP_CODE" != "200" ] && [ "$HTTP_CODE" != "201" ]; then
+            echo "❌ Failed to update minimum_build_version (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+          echo "✅ minimum_build_version updated to $NEW_VERSION"

@@ -1,0 +1,96 @@
+// Translations.ts - Contains all French translations for the app
+
+export const Translations = {
+  // General
+  appName: 'Location Majdi Ben Aissa',
+  loading: 'Chargement...',
+  error: 'Erreur',
+  success: 'Succès',
+  cancel: 'Annuler',
+  save: 'Enregistrer',
+  delete: 'Supprimer',
+  confirm: 'Confirmer',
+  back: 'Retour',
+  next: 'Suivant',
+  done: 'Terminé',
+  
+  // Authentication
+  login: 'Connexion',
+  logout: 'Déconnexion',
+  adminMode: 'Mode Administrateur',
+  viewerMode: 'Mode Visiteur',
+  enterPassword: 'Entrez le mot de passe',
+  incorrectPassword: 'Mot de passe incorrect',
+  
+  // Navigation
+  houses: 'Maisons',
+  calendar: 'Calendrier',
+  settings: 'Paramètres',
+  
+  // Houses
+  selectHouse: 'Sélectionnez une maison',
+  houseDetails: 'Détails de la maison',
+  searchForAvailability: 'Rechercher Disponibilité',
+  search: 'Rechercher',
+  
+  // Calendar
+  available: 'Disponible',
+  rented: 'Loué',
+  availableLegend: 'Disponible',
+  rentedLegend: 'Loué',
+  halfDayLegend: 'Demi-journée',
+  selectDates: 'Sélectionnez les dates',
+  startDate: 'Date de début',
+  endDate: 'Date de fin',
+  renterName: 'Nom du locataire',
+  notes: 'Notes',
+  addRental: 'Ajouter une location',
+  removeRental: 'Supprimer la location',
+  rentalAdded: 'Location ajoutée avec succès',
+  rentalRemoved: 'Location supprimée avec succès',
+  editRental: 'Modifier la location',
+  rentalDetails: 'Détails de la location',
+  halfDayBooking: 'Réservation demi-journée',
+  startHalfDay: 'Arrivée à midi',
+  endHalfDay: 'Départ à midi',
+  morningOnly: 'Matin seulement',
+  afternoonOnly: 'Après-midi seulement',
+  fullDay: 'Journée complète',
+  
+  // Settings
+  language: 'Langue',
+  about: 'À propos',
+  help: 'Aide',
+  adminAccess: 'Accès administrateur',
+  sync: 'Synchroniser',
+  syncing: 'Synchronisation...',
+  syncSuccess: 'Synchronisation réussie',
+  syncError: 'Erreur de synchronisation',
+  clearData: 'Effacer les données',
+  clearDataConfirm: 'Êtes-vous sûr de vouloir effacer toutes les données locales?',
+  clearSuccess: 'Données effacées avec succès',
+  clearError: 'Erreur lors de l\'effacement des données',
+  dataManagement: 'Gestion des données',
+  syncData: 'Synchroniser',
+  offlineNoSync: 'Synchronisation impossible en mode hors ligne',
+  
+  // Network
+  offlineWarning: 'Vous êtes hors ligne. Les données affichées peuvent ne pas être à jour.',
+  lastConnected: 'Dernière connexion',
+  syncingData: 'Synchronisation des données...',
+  syncingComplete: 'Synchronisation terminée',
+  retryConnection: 'Vérifier la connexion',
+  connectionRestored: 'Connexion rétablie',
+  
+  // Months
+  months: [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+  ],
+  
+  // Days of week
+  daysOfWeek: ['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'],
+};
+
+// Add default export to fix warning
+export default Translations;
