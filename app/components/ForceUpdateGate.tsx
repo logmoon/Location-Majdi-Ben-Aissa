@@ -1,3 +1,4 @@
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 import React, { ReactNode, useEffect, useState } from 'react';
 import {
@@ -25,8 +26,15 @@ const ForceUpdateGate: React.FC<ForceUpdateGateProps> = ({ children }) => {
   const [checking, setChecking] = useState(true);
   const [needsUpdate, setNeedsUpdate] = useState(false);
 
-  // Constants.nativeBuildVersion is the actual build number baked in at build time by EAS
-  const currentBuild = parseInt(Constants.nativeBuildVersion ?? '1', 10);
+  // Application.nativeBuildVersion reads the versionCode directly from the
+  // Android package manager at runtime — reliable whether running the embedded
+  // bundle or an OTA update via expo-updates. Constants.nativeBuildVersion
+  // returns null when running an OTA bundle, which caused the gate to always
+  // trigger with the '1' fallback.
+  // Fallback to null if both are unavailable — checkForUpdate treats a null
+  // currentBuild as unknown and fails open (never blocks the user).
+  const nativeBuildStr = Application.nativeBuildVersion ?? Constants.nativeBuildVersion ?? null;
+  const currentBuild = nativeBuildStr !== null ? parseInt(nativeBuildStr, 10) : null;
 
   useEffect(() => {
     checkForUpdate();
@@ -39,7 +47,7 @@ const ForceUpdateGate: React.FC<ForceUpdateGateProps> = ({ children }) => {
         updateService.fetchMinimumBuildVersion(),
         new Promise<null>(resolve => setTimeout(() => resolve(null), 5000)),
       ]);
-      if (minimum !== null && currentBuild < minimum) {
+      if (minimum !== null && currentBuild !== null && currentBuild < minimum) {
         setNeedsUpdate(true);
       }
     } finally {
