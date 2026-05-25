@@ -136,6 +136,18 @@ jobs:
           curl -L "${{ steps.build.outputs.build_url }}" -o app-release.apk
           echo "✅ APK downloaded"
 
+      - name: Publish JS bundle to preview channel
+        # Published before the GitHub Release so the bundle is already available
+        # when users install the APK. expo-updates needs a matching bundle on the
+        # preview channel for the new runtime version, otherwise the splash screen
+        # hangs on a fresh install with no cache to fall back to.
+        run: |
+          eas update --branch preview --message "Native build ${{ steps.build.outputs.build_version }}" --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -151,6 +163,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Bump minimum_build_version in Supabase
+        # Runs last — only enforce the minimum version once the APK and its
+        # JS bundle are both publicly available.
         run: |
           NEW_VERSION="${{ steps.build.outputs.build_version }}"
           echo "Bumping minimum_build_version to $NEW_VERSION"

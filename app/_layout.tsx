@@ -1,8 +1,8 @@
 import { Stack } from 'expo-router';
 import { useEffect } from 'react';
-import { View } from 'react-native';
+import { AppState, View } from 'react-native';
 import 'react-native-url-polyfill/auto';
-import { restoreAdminSession } from '../lib/supabase';
+import { restoreAdminSession, validateAdminSession } from '../lib/supabase';
 import ForceUpdateGate from './components/ForceUpdateGate';
 import OfflineIndicator from './components/OfflineIndicator';
 import SettingsButton from './components/SettingsButton';
@@ -15,20 +15,37 @@ import { pushTokenService } from './services/pushTokenService';
 /**
  * On app launch, restores the admin JWT from AsyncStorage so the admin
  * doesn't have to log in again after a restart.
- * Also re-registers the push token once the admin session is confirmed active.
+ * Also validates the session against the remote password_version — if the
+ * password was changed, the session is cleared and the admin is logged out.
+ * Re-validates every time the app comes back to the foreground.
  */
 function PushTokenRehydrator() {
   const { isAdmin, setIsAdmin } = useRental();
 
-  // Restore admin JWT from AsyncStorage on first mount
+  // Restore admin JWT on first mount, validate password version
   useEffect(() => {
     restoreAdminSession().then((restored) => {
       if (restored && !isAdmin) {
         setIsAdmin(true);
+      } else if (!restored && isAdmin) {
+        // Session was invalidated (password changed)
+        setIsAdmin(false);
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-validate when app comes back to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && isAdmin) {
+        validateAdminSession().then((valid) => {
+          if (!valid) setIsAdmin(false);
+        });
+      }
+    });
+    return () => sub.remove();
+  }, [isAdmin, setIsAdmin]);
 
   // Re-register push token whenever admin status becomes true
   useEffect(() => {

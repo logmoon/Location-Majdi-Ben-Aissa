@@ -37,6 +37,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 // Supabase's own JWT secret — our token is signed with ADMIN_JWT_SECRET instead.
 let _adminToken: string | null = null;
 
+const ADMIN_JWT_KEY = 'admin_jwt';
+const PASSWORD_VERSION_KEY = 'admin_password_version';
+
 /**
  * Returns a Supabase client that sends the admin JWT as the Authorization header.
  * Use this for any write operation that requires the admin RLS policy.
@@ -59,26 +62,83 @@ export function getAdminClient() {
 
 /**
  * Persist the admin JWT so getAdminClient() picks it up.
- * Also saves it to AsyncStorage so it survives app restarts.
+ * Also saves the current password_version so we can detect remote invalidation.
  */
 export async function setAdminSession(accessToken: string): Promise<void> {
   _adminToken = accessToken;
-  await AsyncStorage.setItem('admin_jwt', accessToken);
+  await AsyncStorage.setItem(ADMIN_JWT_KEY, accessToken);
+  // Snapshot the current password_version at login time
+  try {
+    const { data } = await supabase
+      .from('app_config')
+      .select('value')
+      .eq('key', 'password_version')
+      .single();
+    if (data?.value) {
+      await AsyncStorage.setItem(PASSWORD_VERSION_KEY, data.value);
+    }
+  } catch (_) {}
 }
 
 /**
  * Restore the admin JWT from AsyncStorage on app start.
- * Call this once during app initialisation (e.g. in _layout.tsx).
+ * Validates the stored password_version against Supabase — if the password
+ * was changed since last login, clears the session and returns false.
  */
 export async function restoreAdminSession(): Promise<boolean> {
   try {
-    const token = await AsyncStorage.getItem('admin_jwt');
-    if (token) {
-      _adminToken = token;
-      return true;
+    const token = await AsyncStorage.getItem(ADMIN_JWT_KEY);
+    if (!token) return false;
+
+    // Check if the password has been changed since this session was created
+    const storedVersion = await AsyncStorage.getItem(PASSWORD_VERSION_KEY);
+    try {
+      const { data } = await supabase
+        .from('app_config')
+        .select('value')
+        .eq('key', 'password_version')
+        .single();
+      const remoteVersion = data?.value ?? '0';
+      const localVersion = storedVersion ?? '0';
+      if (remoteVersion !== localVersion) {
+        // Password was changed — invalidate this session
+        await clearAdminSession();
+        return false;
+      }
+    } catch (_) {
+      // Network error — fail open (don't log out when offline)
     }
+
+    _adminToken = token;
+    return true;
   } catch (_) {}
   return false;
+}
+
+/**
+ * Check if the current session is still valid against the remote password_version.
+ * Call this periodically while the admin is logged in.
+ * Returns false and clears the session if the password was changed remotely.
+ */
+export async function validateAdminSession(): Promise<boolean> {
+  if (!_adminToken) return false;
+  try {
+    const storedVersion = await AsyncStorage.getItem(PASSWORD_VERSION_KEY);
+    const { data } = await supabase
+      .from('app_config')
+      .select('value')
+      .eq('key', 'password_version')
+      .single();
+    const remoteVersion = data?.value ?? '0';
+    const localVersion = storedVersion ?? '0';
+    if (remoteVersion !== localVersion) {
+      await clearAdminSession();
+      return false;
+    }
+    return true;
+  } catch (_) {
+    return true; // fail open on network error
+  }
 }
 
 /**
@@ -86,7 +146,8 @@ export async function restoreAdminSession(): Promise<boolean> {
  */
 export async function clearAdminSession(): Promise<void> {
   _adminToken = null;
-  await AsyncStorage.removeItem('admin_jwt');
+  await AsyncStorage.removeItem(ADMIN_JWT_KEY);
+  await AsyncStorage.removeItem(PASSWORD_VERSION_KEY);
 }
 
 const supabaseExport = { supabase, getAdminClient, setAdminSession, restoreAdminSession, clearAdminSession };
