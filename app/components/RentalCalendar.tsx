@@ -54,12 +54,7 @@ const RentalDetailsModal: React.FC<RentalDetailsModalProps> = ({
           text: Translations.delete,
           style: 'destructive',
           onPress: () => {
-            // Identify by id when available — startDate-based lookup fails after an edit
-            if (rentalPeriod.id) {
-              removeRentalPeriod(houseId, rentalPeriod.startDate);
-            } else {
-              removeRentalPeriod(houseId, rentalPeriod.startDate);
-            }
+            removeRentalPeriod(houseId, rentalPeriod.startDate, rentalPeriod.id ?? rentalPeriod.tempId);
             onClose();
           },
         },

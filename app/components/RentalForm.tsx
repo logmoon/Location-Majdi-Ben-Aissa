@@ -129,9 +129,12 @@ const RentalForm: React.FC<RentalFormProps> = ({
     };
     
     if (initialRental) {
-      // Update existing rental - include the id if it exists
+      // Update existing rental - include id and tempId if they exist
       if (initialRental.id) {
         rentalData.id = initialRental.id;
+      }
+      if (initialRental.tempId) {
+        rentalData.tempId = initialRental.tempId;
       }
       const updateSuccess = await updateRentalPeriod(rentalData);
       

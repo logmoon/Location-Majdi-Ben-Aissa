@@ -62,8 +62,8 @@ const TaskFormModal: React.FC<TaskFormModalProps> = ({ visible, houseId, editing
       return;
     }
 
-    if (editingTask?.id) {
-      await updateTask(editingTask.id, { category, description: description.trim(), isUrgent });
+    if (editingTask?.id ?? editingTask?.tempId) {
+      await updateTask(editingTask.id ?? editingTask.tempId ?? '', { category, description: description.trim(), isUrgent });
     } else {
       await addTask({
         houseId,
@@ -169,7 +169,7 @@ const TaskRow: React.FC<TaskRowProps> = ({ task, onEdit }) => {
         {
           text: 'Supprimer',
           style: 'destructive',
-          onPress: () => task.id && deleteTask(task.id),
+          onPress: () => deleteTask(task.id ?? task.tempId ?? ''),
         },
       ]
     );

@@ -138,16 +138,12 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         // — don't wipe the cache.
         if (remoteTasks.length === 0 && prev.length > 0) return prev;
 
-        // Keep local-only tasks that haven't been synced yet
+        // Keep all local-only tasks that haven't been synced yet.
+        // Don't attempt dedup by houseId+category+description — that
+        // could silently drop a legitimate offline task that happens to
+        // match a remote one on those fields.
         const localOnly = prev.filter(t => !t.id && t.tempId);
-        const trulyLocal = localOnly.filter(local =>
-          !remoteTasks.some(r =>
-            r.houseId === local.houseId &&
-            r.category === local.category &&
-            r.description === local.description
-          )
-        );
-        const merged = [...remoteTasks, ...trulyLocal];
+        const merged = [...remoteTasks, ...localOnly];
         saveCachedTasks(merged);
         return merged;
       });
@@ -169,6 +165,10 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (currentOps.length === 0) return;
 
     const remaining: PendingTaskOp[] = [];
+    // Maps tempId → real Supabase id for adds that succeed in this flush pass.
+    // Subsequent update/delete ops in the same queue can use this to resolve
+    // the real id instead of the tempId.
+    const tempIdToRealId: Record<string, string> = {};
 
     for (const op of currentOps) {
       try {
@@ -177,6 +177,7 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         if (op.type === 'add' && op.payload) {
           const id = await taskService.addTask(op.payload as HouseTask);
           if (id) {
+            if (op.tempId) tempIdToRealId[op.tempId] = id;
             // Replace the tempId task in state with the real id
             setTasks(prev => {
               const updated = prev.map(t =>
@@ -188,9 +189,11 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             success = true;
           }
         } else if (op.type === 'update' && op.taskId && op.payload) {
-          success = await taskService.updateTask(op.taskId, op.payload);
+          const realId = tempIdToRealId[op.taskId] ?? op.taskId;
+          success = await taskService.updateTask(realId, op.payload);
         } else if (op.type === 'delete' && op.taskId) {
-          success = await taskService.deleteTask(op.taskId);
+          const realId = tempIdToRealId[op.taskId] ?? op.taskId;
+          success = await taskService.deleteTask(realId);
         }
 
         if (!success) remaining.push(op);
@@ -284,9 +287,37 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   };
 
   const updateTask = async (id: string, updates: Partial<HouseTask>): Promise<boolean> => {
-    // Optimistic local update
+    // Check if this is a local-only task (tempId, no real id)
+    const existingTask = tasks.find(t => t.id === id || t.tempId === id);
+    const isLocalOnly = existingTask && !existingTask.id && !!existingTask.tempId;
+
+    if (isLocalOnly) {
+      // Update local state by tempId
+      setTasks(prev => {
+        const updated = prev.map(t =>
+          t.tempId === id ? { ...t, ...updates } : t
+        );
+        saveCachedTasks(updated);
+        return updated;
+      });
+      // Patch the pending 'add' op payload so changes carry over when synced
+      setPendingOps(prev => {
+        const updated = prev.map(op =>
+          op.type === 'add' && op.tempId === id && op.payload
+            ? { ...op, payload: { ...op.payload, ...updates } }
+            : op
+        );
+        savePendingOps(updated);
+        return updated;
+      });
+      return true;
+    }
+
+    // Optimistic local update for synced tasks — also match by tempId
+    // in case the caller has a stale tempId reference (e.g. edit modal
+    // was open when the task synced and got a real id).
     setTasks(prev => {
-      const updated = prev.map(t => t.id === id ? { ...t, ...updates } : t);
+      const updated = prev.map(t => (t.id === id || t.tempId === id) ? { ...t, ...updates } : t);
       saveCachedTasks(updated);
       return updated;
     });
@@ -310,17 +341,32 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     return true;
   };
 
-  const deleteTask = async (id: string): Promise<boolean> => {
-    // Optimistic local removal
+  const deleteTask = async (idOrTempId: string): Promise<boolean> => {
+    // Find the task in local state by id or tempId
+    const existingTask = tasks.find(t => t.id === idOrTempId || t.tempId === idOrTempId);
+    const isLocalOnly = existingTask && !existingTask.id && !!existingTask.tempId;
+
+    // Optimistic local removal — match by id or tempId
     setTasks(prev => {
-      const updated = prev.filter(t => t.id !== id);
+      const updated = prev.filter(t => !(t.id === idOrTempId || t.tempId === idOrTempId));
       saveCachedTasks(updated);
       return updated;
     });
 
+    if (isLocalOnly) {
+      // Task hasn't been synced to Supabase yet — cancel its pending 'add' op
+      // instead of queuing a 'delete' op that would fail (wrong id).
+      setPendingOps(prev => {
+        const updated = prev.filter(op => !(op.type === 'add' && op.tempId === existingTask.tempId));
+        savePendingOps(updated);
+        return updated;
+      });
+      return true;
+    }
+
     if (isConnected) {
       try {
-        const success = await taskService.deleteTask(id);
+        const success = await taskService.deleteTask(idOrTempId);
         if (success) return true;
       } catch (error) {
         console.error('Error deleting task on remote:', error);
@@ -330,7 +376,7 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // Offline or remote failed — queue for later
     await addPendingOp({
       type: 'delete',
-      taskId: id,
+      taskId: idOrTempId,
       timestamp: Date.now(),
     });
     return true;

@@ -23,7 +23,7 @@ interface RentalContextType {
   isAdmin: boolean;
   setIsAdmin: (value: boolean) => void;
   addRentalPeriod: (rental: RentalPeriod) => Promise<boolean>;
-  removeRentalPeriod: (houseId: number, startDate: string) => Promise<void>;
+  removeRentalPeriod: (houseId: number, startDate: string, idOrTempId?: string) => Promise<void>;
   updateRentalPeriod: (rental: RentalPeriod) => Promise<boolean>;
   isHouseAvailable: (houseId: number, date: string, timeOfDay?: 'AM' | 'PM') => boolean;
   getRentalPeriodsForHouse: (houseId: number) => RentalPeriod[];
@@ -75,6 +75,7 @@ const HOUSES_CACHE_KEY = '@rental_app:houses_cache';
 type OperationType = 'add' | 'update' | 'remove';
 
 interface PendingOperation {
+  id: string;
   type: OperationType;
   data: RentalPeriod;
   timestamp: number;
@@ -206,11 +207,22 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     
     // Subscribe to changes in rental periods
     const unsubscribe = rentalService.subscribeToRentalPeriods(async (updatedPeriods) => {
-      // Merge remote periods with local periods that don't have IDs yet
-      // Use ref instead of closure to avoid stale data
+      // Merge remote periods with local-only periods, dedup by compound key.
+      // When a rental exists both in remote (real id) and local-only (tempId),
+      // keep the remote version — it's the authoritative one.
       const currentPeriods = rentalPeriodsRef.current;
       const localOnlyPeriods = currentPeriods.filter(period => !period.id);
-      const mergedPeriods = [...updatedPeriods, ...localOnlyPeriods];
+      const deduped = new Map<string, RentalPeriod>();
+      for (const r of updatedPeriods) {
+        deduped.set(`${r.houseId}-${r.startDate}-${r.endDate}`, r);
+      }
+      for (const r of localOnlyPeriods) {
+        const key = `${r.houseId}-${r.startDate}-${r.endDate}`;
+        if (!deduped.has(key)) {
+          deduped.set(key, r);
+        }
+      }
+      const mergedPeriods = Array.from(deduped.values());
       
       setRentalPeriods(mergedPeriods);
       await saveRentalPeriods(mergedPeriods);
@@ -250,6 +262,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Add a pending operation
   const addPendingOperation = async (type: OperationType, data: RentalPeriod) => {
     const newOperation: PendingOperation = {
+      id: `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`,
       type,
       data,
       timestamp: Date.now(),
@@ -326,14 +339,9 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         }
       }
       
-      // Remove successful operations from the pending list
-      const updatedOperations = currentOps.filter(
-        op => !successfulOperations.some(
-          successOp => 
-            successOp.type === op.type && 
-            successOp.timestamp === op.timestamp
-        )
-      );
+      // Remove successful operations from the pending list using unique id
+      const successfulIds = new Set(successfulOperations.map(op => op.id));
+      const updatedOperations = currentOps.filter(op => !successfulIds.has(op.id));
       
       setPendingOperations(updatedOperations);
       await savePendingOperations(updatedOperations);
@@ -359,20 +367,20 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         return false;
       }
 
-      // Keep local periods that aren't in remote data (offline additions)
-      const mergedPeriods = [...remotePeriods];
-      
-      // Add local-only periods that don't exist in remote data
-      localOnlyPeriods.forEach(localPeriod => {
-        const potentialDuplicate = remotePeriods.some(remotePeriod => 
-          remotePeriod.houseId === localPeriod.houseId && 
-          remotePeriod.startDate === localPeriod.startDate && 
-          remotePeriod.endDate === localPeriod.endDate
-        );
-        if (!potentialDuplicate) {
-          mergedPeriods.push(localPeriod);
+      // Merge remote + local-only periods, dedup by compound key.
+      // Prefer the remote version (has real id) when there's a collision
+      // (e.g. if processPendingOps just flushed an add but the ref is stale).
+      const deduped = new Map<string, RentalPeriod>();
+      for (const r of remotePeriods) {
+        deduped.set(`${r.houseId}-${r.startDate}-${r.endDate}`, r);
+      }
+      for (const r of localOnlyPeriods) {
+        const key = `${r.houseId}-${r.startDate}-${r.endDate}`;
+        if (!deduped.has(key)) {
+          deduped.set(key, r);
         }
-      });
+      }
+      const mergedPeriods = Array.from(deduped.values());
       
       setRentalPeriods(mergedPeriods);
       await saveRentalPeriods(mergedPeriods);
@@ -436,12 +444,12 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   };
 
   // Remove a rental period
-  const removeRentalPeriod = async (houseId: number, startDate: string) => {
+  const removeRentalPeriod = async (houseId: number, startDate: string, idOrTempId?: string) => {
     try {
-      // Find the rental to remove
-      const rentalToRemove = rentalPeriods.find(
-        (rental) => rental.houseId === houseId && rental.startDate === startDate
-      );
+      // Find the rental to remove — prefer unique identifier over compound key
+      const rentalToRemove = idOrTempId
+        ? rentalPeriods.find(r => r.id === idOrTempId || r.tempId === idOrTempId)
+        : rentalPeriods.find(r => r.houseId === houseId && r.startDate === startDate);
 
       if (!rentalToRemove) return;
 
@@ -460,27 +468,27 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         await addPendingOperation('remove', rentalToRemove);
       }
 
-      // Update local state
-      const updatedPeriods = rentalPeriods.filter(
-        (rental) => !(rental.houseId === houseId && rental.startDate === startDate)
-      );
+      // Update local state — use id/tempId when available for precise match
+      const updatedPeriods = idOrTempId
+        ? rentalPeriods.filter(r => r.id !== idOrTempId && r.tempId !== idOrTempId)
+        : rentalPeriods.filter(r => !(r.houseId === houseId && r.startDate === startDate));
       setRentalPeriods([...updatedPeriods]);
       saveRentalPeriods(updatedPeriods);
     } catch (error) {
       console.error('Error removing rental period:', error);
       Alert.alert('Erreur', 'Impossible de supprimer la location. La modification sera synchronisée plus tard.');
       // Fall back to local-only update
-      const rentalToRemove = rentalPeriods.find(
-        (rental) => rental.houseId === houseId && rental.startDate === startDate
-      );
+      const rentalToRemove = idOrTempId
+        ? rentalPeriods.find(r => r.id === idOrTempId || r.tempId === idOrTempId)
+        : rentalPeriods.find(r => r.houseId === houseId && r.startDate === startDate);
       
       if (rentalToRemove) {
         await addPendingOperation('remove', rentalToRemove);
       }
       
-      const updatedPeriods = rentalPeriods.filter(
-        (rental) => !(rental.houseId === houseId && rental.startDate === startDate)
-      );
+      const updatedPeriods = idOrTempId
+        ? rentalPeriods.filter(r => r.id !== idOrTempId && r.tempId !== idOrTempId)
+        : rentalPeriods.filter(r => !(r.houseId === houseId && r.startDate === startDate));
       setRentalPeriods([...updatedPeriods]);
       saveRentalPeriods(updatedPeriods);
     }
@@ -503,24 +511,23 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         return false;
       }
 
-      // Preserve the ID if it exists
+      // Build a clean copy — don't mutate the caller's object
+      const rentalToSave = { ...updatedRental };
       if (existingRental?.id) {
-        updatedRental.id = existingRental.id;
+        rentalToSave.id = existingRental.id;
       }
-      
-      // Preserve the tempId if it exists (for local tracking)
-      if (existingRental?.tempId && !updatedRental.tempId) {
-        updatedRental.tempId = existingRental.tempId;
+      if (existingRental?.tempId && !rentalToSave.tempId) {
+        rentalToSave.tempId = existingRental.tempId;
       }
 
       // Check for overlapping rentals (excluding the current one being edited)
       const hasOverlap = checkForOverlap(
-        updatedRental.houseId, 
-        updatedRental.startDate, 
-        updatedRental.endDate, 
-        updatedRental.startHalfDay || false,
-        updatedRental.endHalfDay || false,
-        updatedRental.id || updatedRental.tempId
+        rentalToSave.houseId, 
+        rentalToSave.startDate, 
+        rentalToSave.endDate, 
+        rentalToSave.startHalfDay || false,
+        rentalToSave.endHalfDay || false,
+        rentalToSave.id || rentalToSave.tempId
       );
       
       if (hasOverlap) {
@@ -530,22 +537,22 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       let updateSuccess = false;
 
-      if (isConnected && isAdmin && updatedRental.id) {
+      if (isConnected && isAdmin && rentalToSave.id) {
         // If online and it has an ID, update in Supabase
-        updateSuccess = await rentalService.updateRentalPeriod(updatedRental.id, updatedRental);
+        updateSuccess = await rentalService.updateRentalPeriod(rentalToSave.id, rentalToSave);
         
         if (!updateSuccess) {
-          await addPendingOperation('update', updatedRental);
+          await addPendingOperation('update', rentalToSave);
         }
       } else if (isAdmin) {
-        await addPendingOperation('update', updatedRental);
+        await addPendingOperation('update', rentalToSave);
       }
 
       // Update local state - use id or tempId to identify the rental if available
       const updatedPeriods = rentalPeriods.map(rental => {
-        if (updatedRental.id && rental.id === updatedRental.id) return updatedRental;
-        if (updatedRental.tempId && rental.tempId === updatedRental.tempId) return updatedRental;
-        if (rental.houseId === existingRental.houseId && rental.startDate === existingRental.startDate) return updatedRental;
+        if (rentalToSave.id && rental.id === rentalToSave.id) return rentalToSave;
+        if (rentalToSave.tempId && rental.tempId === rentalToSave.tempId) return rentalToSave;
+        if (rental.houseId === existingRental.houseId && rental.startDate === existingRental.startDate) return rentalToSave;
         return rental;
       });
       
@@ -568,14 +575,26 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       console.error('Error updating rental period:', error);
       Alert.alert('Erreur', 'Impossible de modifier la location. La modification sera synchronisée plus tard.');
       // Fall back to local-only update
-      await addPendingOperation('update', updatedRental);
-      
+      const rentalToSave = { ...updatedRental };
+      // Copy existing id/tempId into the fallback copy too
+      const existing = rentalPeriods.find(
+        (r) => {
+          if (updatedRental.id && r.id === updatedRental.id) return true;
+          if (updatedRental.tempId && r.tempId === updatedRental.tempId) return true;
+          return r.houseId === updatedRental.houseId && r.startDate === updatedRental.startDate;
+        }
+      );
+      if (existing?.id) rentalToSave.id = existing.id;
+      if (existing?.tempId && !rentalToSave.tempId) rentalToSave.tempId = existing.tempId;
+
+      await addPendingOperation('update', rentalToSave);
+
       // Try to find the existing rental again
       const existingRental = rentalPeriods.find(
         (rental) => {
-          if (updatedRental.id && rental.id === updatedRental.id) return true;
-          if (updatedRental.tempId && rental.tempId === updatedRental.tempId) return true;
-          return rental.houseId === updatedRental.houseId && rental.startDate === updatedRental.startDate;
+          if (rentalToSave.id && rental.id === rentalToSave.id) return true;
+          if (rentalToSave.tempId && rental.tempId === rentalToSave.tempId) return true;
+          return rental.houseId === rentalToSave.houseId && rental.startDate === rentalToSave.startDate;
         }
       );
 
@@ -586,9 +605,9 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       // Update local state - use id or tempId to identify the rental if available
       const updatedPeriods = rentalPeriods.map(rental => {
-        if (updatedRental.id && rental.id === updatedRental.id) return updatedRental;
-        if (updatedRental.tempId && rental.tempId === updatedRental.tempId) return updatedRental;
-        if (rental.houseId === existingRental.houseId && rental.startDate === existingRental.startDate) return updatedRental;
+        if (rentalToSave.id && rental.id === rentalToSave.id) return rentalToSave;
+        if (rentalToSave.tempId && rental.tempId === rentalToSave.tempId) return rentalToSave;
+        if (rental.houseId === existingRental.houseId && rental.startDate === existingRental.startDate) return rentalToSave;
         return rental;
       });
       
