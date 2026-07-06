@@ -19,6 +19,7 @@ interface PendingTaskOp {
   tempId?: string;       // local id (add)
   payload?: Partial<HouseTask>; // full task for add, partial for update
   timestamp: number;
+  retryCount?: number;
 }
 
 // ─── Context interface ────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ interface TaskContextType {
   getTasksForHouse: (houseId: number) => HouseTask[];
   getPendingTasksForHouse: (houseId: number) => HouseTask[];
   refreshTasks: () => Promise<void>;
+  pendingOpsCount: number;
 }
 
 const TaskContext = createContext<TaskContextType>({
@@ -45,6 +47,7 @@ const TaskContext = createContext<TaskContextType>({
   getTasksForHouse: () => [],
   getPendingTasksForHouse: () => [],
   refreshTasks: async () => {},
+  pendingOpsCount: 0,
 });
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -61,6 +64,12 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   // even when called from a useEffect that captured an earlier closure
   const pendingOpsRef = useRef(pendingOps);
 
+  // Prevent concurrent flush calls (useEffect auto-flush + manual refresh racing).
+  // Uses a promise chain so that if a second flush arrives while one is in progress,
+  // it waits for the first to complete before reading the updated queue.
+  const flushInProgressRef = useRef(false);
+  const flushPromiseRef = useRef<Promise<void>>(Promise.resolve());
+
   useEffect(() => { tasksRef.current = tasks; }, [tasks]);
   useEffect(() => { pendingOpsRef.current = pendingOps; }, [pendingOps]);
 
@@ -73,19 +82,28 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   useEffect(() => {
     if (isConnected === null) return; // still waiting for NetInfo
     if (isConnected) {
-      flushPendingOps().then(() => loadTasksFromRemote());
+      flushPendingOps()
+        .then(() => loadTasksFromRemote())
+        .catch(err => console.error('[Task] flush/load chain failed:', err));
     }
   }, [isConnected]);
 
   // Auto-create cleaning tasks once per session when online + admin + data ready.
-  // Guard: only set autoTaskCheckDoneRef AFTER the check actually runs, not before —
-  // otherwise a race where rentalPeriods is empty on first fire permanently skips the check.
   useEffect(() => {
     if (!isConnected || !isAdmin || autoTaskCheckDoneRef.current) return;
     if (rentalPeriods.length === 0 || houses.length === 0) return;
-    // Mark done before the async call to prevent concurrent runs, not to skip future ones
-    autoTaskCheckDoneRef.current = true;
-    checkAndCreateAutoTasks();
+
+    const runCheck = async () => {
+      try {
+        await checkAndCreateAutoTasks();
+      } catch (error) {
+        console.error('[Task] Auto-task creation failed, will retry:', error);
+        // Don't mark as done — allow retry on next dependency change
+        return;
+      }
+      autoTaskCheckDoneRef.current = true;
+    };
+    runCheck();
   }, [isConnected, isAdmin, rentalPeriods, houses]);
 
   // ─── Cache helpers ──────────────────────────────────────────────────────────
@@ -160,50 +178,96 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
    * Removes successful ops from the queue.
    * Reads from pendingOpsRef to avoid stale closure issues when called from useEffect.
    */
-  const flushPendingOps = async () => {
+  const flushPendingOps = async (): Promise<void> => {
+    // If a flush is already in progress, wait for it to complete first.
+    // Then re-check the queue — there may be new ops that were added while
+    // we waited, and they need to be processed too.
+    if (flushInProgressRef.current) {
+      await flushPromiseRef.current;
+      // Fall through to process any ops that accumulated during the wait
+    }
+
     const currentOps = pendingOpsRef.current;
     if (currentOps.length === 0) return;
 
-    const remaining: PendingTaskOp[] = [];
-    // Maps tempId → real Supabase id for adds that succeed in this flush pass.
-    // Subsequent update/delete ops in the same queue can use this to resolve
-    // the real id instead of the tempId.
-    const tempIdToRealId: Record<string, string> = {};
+    flushInProgressRef.current = true;
+    const promise = (async () => {
+      const remaining: PendingTaskOp[] = [];
+      // Maps tempId → real Supabase id for adds that succeed in this flush pass.
+      // Subsequent update/delete ops in the same queue can use this to resolve
+      // the real id instead of the tempId.
+      const tempIdToRealId: Record<string, string> = {};
 
-    for (const op of currentOps) {
-      try {
-        let success = false;
+      for (const op of currentOps) {
+        try {
+          let success = false;
 
-        if (op.type === 'add' && op.payload) {
-          const id = await taskService.addTask(op.payload as HouseTask);
-          if (id) {
-            if (op.tempId) tempIdToRealId[op.tempId] = id;
-            // Replace the tempId task in state with the real id
-            setTasks(prev => {
-              const updated = prev.map(t =>
-                t.tempId === op.tempId ? { ...t, id, tempId: undefined } : t
-              );
-              saveCachedTasks(updated);
-              return updated;
-            });
-            success = true;
+          if (op.type === 'add' && op.payload) {
+            // Validate payload before sending to Supabase
+            if (!op.payload.houseId || !op.payload.category) {
+              console.error(`[Task] Dropping invalid add op ${op.tempId}: missing houseId or category`);
+              continue;
+            }
+            const id = await taskService.addTask(op.payload as HouseTask);
+            if (id) {
+              if (op.tempId) tempIdToRealId[op.tempId] = id;
+              // Replace the tempId task in state with the real id
+              setTasks(prev => {
+                const updated = prev.map(t =>
+                  t.tempId === op.tempId ? { ...t, id, tempId: undefined } : t
+                );
+                saveCachedTasks(updated);
+                return updated;
+              });
+              success = true;
+            }
+          } else if (op.type === 'update' && op.taskId && op.payload) {
+            const realId = tempIdToRealId[op.taskId] ?? op.taskId;
+            success = await taskService.updateTask(realId, op.payload);
+          } else if (op.type === 'delete' && op.taskId) {
+            const realId = tempIdToRealId[op.taskId] ?? op.taskId;
+            success = await taskService.deleteTask(realId);
           }
-        } else if (op.type === 'update' && op.taskId && op.payload) {
-          const realId = tempIdToRealId[op.taskId] ?? op.taskId;
-          success = await taskService.updateTask(realId, op.payload);
-        } else if (op.type === 'delete' && op.taskId) {
-          const realId = tempIdToRealId[op.taskId] ?? op.taskId;
-          success = await taskService.deleteTask(realId);
+
+          if (!success) {
+            op.retryCount = (op.retryCount || 0) + 1;
+            if (op.retryCount >= 5) {
+              console.error(`[Task] Dropping ${op.type} op after ${op.retryCount} failed retries`);
+            } else {
+              remaining.push(op);
+            }
+          }
+        } catch {
+          op.retryCount = (op.retryCount || 0) + 1;
+          if (op.retryCount < 5) {
+            remaining.push(op);
+          } else {
+            console.error(`[Task] Dropping ${op.type} op after ${op.retryCount} failed retries`);
+          }
         }
-
-        if (!success) remaining.push(op);
-      } catch {
-        remaining.push(op);
       }
-    }
 
-    setPendingOps(remaining);
-    await savePendingOps(remaining);
+      // Use a functional update so that ops added concurrently while we were
+      // processing (via addPendingOp) are not silently dropped.
+      const snapshotIds = new Set(currentOps.map(op => op.tempId ?? op.taskId ?? ''));
+      setPendingOps(prev => {
+        const concurrent = prev.filter(op => !snapshotIds.has(op.tempId ?? op.taskId ?? ''));
+        const merged = [...remaining, ...concurrent];
+        savePendingOps(merged);
+        return merged;
+      });
+    })();
+    // Attach a catch so that a rejected promise doesn't poison flushPromiseRef
+    // for future callers that await it.
+    flushPromiseRef.current = promise.catch(() => {});
+
+    try {
+      await promise;
+    } finally {
+      flushInProgressRef.current = false;
+      // Reset the stored promise so the next caller gets a fresh resolved one.
+      flushPromiseRef.current = Promise.resolve();
+    }
   };
 
   // ─── Auto-task creation ─────────────────────────────────────────────────────
@@ -440,6 +504,7 @@ export const TaskProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       getTasksForHouse,
       getPendingTasksForHouse,
       refreshTasks,
+      pendingOpsCount: pendingOps.length,
     }}>
       {children}
     </TaskContext.Provider>

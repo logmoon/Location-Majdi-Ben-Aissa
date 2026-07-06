@@ -7,7 +7,7 @@ import {
   isHouseAvailable as _isHouseAvailable,
   toLocalMidnight,
 } from '../../lib/rentalLogic';
-import { clearAdminSession } from '../../lib/supabase';
+import { clearAdminSession, getAdminClient, hasAdminSession } from '../../lib/supabase';
 import { House } from '../constants/Houses';
 import { houseService } from '../services/houseService';
 import { rentalService } from '../services/rentalService';
@@ -31,6 +31,7 @@ interface RentalContextType {
   syncRentalPeriods: () => Promise<boolean>;
   clearLocalData: () => Promise<boolean>;
   isSyncing: boolean;
+  pendingOperationsCount: number;
   checkForOverlap: (houseId: number, startDate: string, endDate: string, startHalfDay: boolean, endHalfDay: boolean, currentRentalId?: string) => boolean;
   refreshHouses: () => Promise<void>;
   addHouse: (house: Omit<House, 'id'>) => Promise<number | null>;
@@ -56,6 +57,7 @@ const RentalContext = createContext<RentalContextType>({
   syncRentalPeriods: async () => false,
   clearLocalData: async () => false,
   isSyncing: false,
+  pendingOperationsCount: 0,
   checkForOverlap: () => false,
   refreshHouses: async () => {},
   addHouse: async () => null,
@@ -79,6 +81,17 @@ interface PendingOperation {
   type: OperationType;
   data: RentalPeriod;
   timestamp: number;
+  retryCount?: number;
+}
+
+// Module-level helper: wraps a promise with a timeout rejection
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`[Sync Timeout] ${label} exceeded ${ms}ms`)), ms)
+    ),
+  ]);
 }
 
 // Create a provider component
@@ -94,6 +107,13 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const rentalPeriodsRef = useRef(rentalPeriods);
   // Ref so processPendingOperations always reads the latest queue even from a stale closure
   const pendingOperationsRef = useRef(pendingOperations);
+
+  // Prevent concurrent sync operations (auto-sync + manual sync racing)
+  const syncInProgressRef = useRef(false);
+  // Monotonically increasing generation counter. When a sync is superseded
+  // (e.g. by a timeout that fires then a new sync starts), later generations
+  // ignore stale state updates from earlier ones.
+  const syncGenerationRef = useRef(0);
 
   // Sync ref with state so subscription callback always reads latest
   useEffect(() => {
@@ -188,12 +208,23 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     if (isConnected) {
       // Process pending ops then sync — own isSyncing for the whole sequence
       const runSync = async () => {
+        // Guard against concurrent syncs (auto-sync & manual sync racing)
+        if (syncInProgressRef.current) {
+          console.warn('[Sync] Auto-sync skipped — sync already in progress');
+          return;
+        }
+        const myGen = ++syncGenerationRef.current;
+        syncInProgressRef.current = true;
         setIsSyncing(true);
         try {
-          await processPendingOperations();
-          await syncWithSupabase();
+          await withTimeout(processPendingOperations(), 30000, 'processPendingOperations');
+          if (myGen !== syncGenerationRef.current) return; // superseded by newer sync
+          await withTimeout(syncWithSupabase(), 30000, 'syncWithSupabase');
+        } catch (error) {
+          console.error('[Sync] Auto-sync error:', error);
         } finally {
           setIsSyncing(false);
+          syncInProgressRef.current = false;
         }
       };
       runSync();
@@ -259,6 +290,35 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   };
 
+  // Check whether the admin JWT is still valid by running a lightweight query
+  const verifyAdminSession = async (): Promise<boolean> => {
+    if (!hasAdminSession()) return false;
+    try {
+      const { error } = await getAdminClient()
+        .from('app_config')
+        .select('value')
+        .limit(1);
+      if (error) {
+        const code = error.code?.toString() || '';
+        const status = (error as any)?.status;
+        const msg = (error.message || '').toLowerCase();
+        if (
+          code === '42501' || code === 'PGRST301' ||
+          status === 401 || status === 403 ||
+          msg.includes('jwt') || msg.includes('not authenticated') ||
+          msg.includes('permission denied') || msg.includes('row-level security')
+        ) {
+          return false;
+        }
+      }
+      return true;
+    } catch {
+      // Fail open on network errors — don't log out due to transient issues.
+      // This matches the pattern in validateAdminSession() in supabase.ts.
+      return true;
+    }
+  };
+
   // Add a pending operation
   const addPendingOperation = async (type: OperationType, data: RentalPeriod) => {
     const newOperation: PendingOperation = {
@@ -279,20 +339,39 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const processPendingOperations = async () => {
     const currentOps = pendingOperationsRef.current;
     if (!isConnected || currentOps.length === 0) return;
-    
+
+    // Capture the generation that this invocation belongs to.
+    // If a newer sync supersedes us while we're running (e.g. after a 30s
+    // timeout), we must not write stale state when we finish.
+    const myGen = syncGenerationRef.current;
+
+    // Quick auth check before burning time on retries that will fail
+    if (isAdmin) {
+      const authValid = await verifyAdminSession();
+      if (!authValid) {
+        console.error('[Sync] processPendingOperations aborted — admin session invalid');
+        await clearAdminSession();
+        setIsAdmin(false);
+        Alert.alert('Session expirée', 'Veuillez vous reconnecter pour synchroniser les données.');
+        return;
+      }
+    }
+
     try {
       const successfulOperations: PendingOperation[] = [];
+      // Track operations dropped due to excessive retries
+      const droppedOperationIds: string[] = [];
       // Maps tempId → real Supabase id for adds that succeed in this flush pass.
       // Subsequent update/remove ops in the same queue can use this to resolve
       // the real id even before syncWithSupabase runs.
       const resolvedIds: Record<string, string> = {};
-      
+
       for (const operation of currentOps) {
         try {
           let success = false;
-          
+
           switch (operation.type) {
-            case 'add':
+            case 'add': {
               const id = await rentalService.addRentalPeriod(operation.data);
               success = !!id;
               if (id) {
@@ -310,6 +389,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
                 });
               }
               break;
+            }
             case 'update': {
               // Resolve the real id: prefer operation.data.id, fall back to
               // resolvedIds in case this rental was added offline in the same queue
@@ -330,23 +410,69 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
               break;
             }
           }
-          
+
           if (success) {
             successfulOperations.push(operation);
+          } else {
+            operation.retryCount = (operation.retryCount || 0) + 1;
+            if (operation.retryCount >= 5) {
+              console.error(`[Sync] Dropping operation ${operation.type} (${operation.id}) after ${operation.retryCount} failed retries`);
+              droppedOperationIds.push(operation.id);
+            } else {
+              console.warn(`[Sync] Operation ${operation.type} (${operation.id}) failed (retry ${operation.retryCount}/5)`);
+            }
           }
         } catch (operationError) {
-          console.error('Error processing operation:', operationError);
+          console.error(`[Sync] Error processing ${operation.type} operation (${operation.id}):`, operationError);
+          // The catch block also needs retry tracking — an unexpected exception
+          // (e.g. a bug in the service layer) would otherwise leak the op into
+          // the queue with no upper bound.
+          operation.retryCount = (operation.retryCount || 0) + 1;
+          if (operation.retryCount >= 5) {
+            console.error(`[Sync] Dropping operation ${operation.type} (${operation.id}) after ${operation.retryCount} failed retries (exception)`);
+            droppedOperationIds.push(operation.id);
+          }
         }
       }
-      
-      // Remove successful operations from the pending list using unique id
-      const successfulIds = new Set(successfulOperations.map(op => op.id));
-      const updatedOperations = currentOps.filter(op => !successfulIds.has(op.id));
-      
-      setPendingOperations(updatedOperations);
-      await savePendingOperations(updatedOperations);
+
+      // TOCTOU guard: if a newer sync superseded us while we were iterating
+      // (e.g. the 30s timeout fired, the mutex was released, and a new sync
+      // started), don't write stale state.
+      if (myGen !== syncGenerationRef.current) {
+        console.warn('[Sync] processPendingOperations stale — skipping state write');
+        return;
+      }
+
+      // Remove successful and permanently dropped operations from the pending list.
+      // Use a functional update so that operations added concurrently while we
+      // were processing (via addPendingOperation) are not silently dropped.
+      const completedIds = new Set([...successfulOperations.map(op => op.id), ...droppedOperationIds]);
+      const snapshotIds = new Set(currentOps.map(op => op.id));
+      setPendingOperations(prev => {
+        const remaining = currentOps.filter(op => !completedIds.has(op.id));
+        const concurrent = prev.filter(op => !snapshotIds.has(op.id));
+        const merged = [...remaining, ...concurrent];
+        savePendingOperations(merged);
+        return merged;
+      });
+
+      // If every operation failed and we're admin, the JWT may have been
+      // invalidated mid-sync (e.g. password changed on another device).
+      if (successfulOperations.length === 0 && currentOps.length > 0 && isAdmin) {
+        const authStillValid = await verifyAdminSession();
+        if (!authStillValid) {
+          console.error('[Sync] All operations failed — admin session became invalid');
+          await clearAdminSession();
+          setIsAdmin(false);
+          Alert.alert('Session expirée', 'Veuillez vous reconnecter pour synchroniser les données.');
+          // Bump the generation so the caller's generation check catches this
+          // and stops instead of continuing to syncWithSupabase().
+          syncGenerationRef.current += 1;
+          return;
+        }
+      }
     } catch (error) {
-      console.error('Error processing pending operations:', error);
+      console.error('[Sync] Error processing pending operations:', error);
     }
   };
 
@@ -622,12 +748,35 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Manual sync function that can be called from UI
   const syncRentalPeriods = async () => {
     if (!isConnected) return false;
+    // Guard against concurrent syncs
+    if (syncInProgressRef.current) {
+      console.warn('[Sync] Manual sync skipped — sync already in progress');
+      return false;
+    }
+    const myGen = ++syncGenerationRef.current;
+    syncInProgressRef.current = true;
     setIsSyncing(true);
     try {
-      await processPendingOperations();
-      return await syncWithSupabase();
+      // Verify the admin JWT before attempting writes
+      if (isAdmin) {
+        const authValid = await verifyAdminSession();
+        if (!authValid) {
+          console.error('[Sync] Cannot sync — admin session invalid');
+          await clearAdminSession();
+          setIsAdmin(false);
+          Alert.alert('Session expirée', 'Veuillez vous reconnecter pour synchroniser les données.');
+          return false;
+        }
+      }
+      await withTimeout(processPendingOperations(), 30000, 'processPendingOperations');
+      if (myGen !== syncGenerationRef.current) return false;
+      return await withTimeout(syncWithSupabase(), 30000, 'syncWithSupabase');
+    } catch (error) {
+      console.error('[Sync] Error during manual sync:', error);
+      return false;
     } finally {
       setIsSyncing(false);
+      syncInProgressRef.current = false;
     }
   };
 
@@ -783,6 +932,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         syncRentalPeriods,
         clearLocalData,
         isSyncing,
+        pendingOperationsCount: pendingOperations.length,
         checkForOverlap,
         refreshHouses,
         addHouse,

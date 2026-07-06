@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import AdminAuth from './components/AdminAuth';
 import AdminHouseManager from './components/AdminHouseManager';
@@ -10,27 +10,40 @@ import { useNetwork } from './context/NetworkContext';
 import { useRental } from './context/RentalContext';
 
 export default function SettingsScreen() {
-  const { isAdmin, syncRentalPeriods, isSyncing } = useRental();
+  const { isAdmin, syncRentalPeriods, isSyncing, pendingOperationsCount } = useRental();
   const { isConnected } = useNetwork();
 
   const [syncStatus, setSyncStatus] = useState<{ complete: boolean; success: boolean }>({ complete: false, success: false });
   const [clearStatus, setClearStatus] = useState<{ complete: boolean; success: boolean }>({ complete: false, success: false });
   const [showShareModal, setShowShareModal] = useState(false);
+  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+    };
+  }, []);
 
   const handleSyncComplete = (success: boolean) => {
     setSyncStatus({ complete: true, success });
-    setTimeout(() => setSyncStatus({ complete: false, success: false }), 3000);
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(() => setSyncStatus({ complete: false, success: false }), 3000);
   };
 
   const handleClearComplete = (success: boolean) => {
     setClearStatus({ complete: true, success });
-    setTimeout(() => setClearStatus({ complete: false, success: false }), 3000);
+    if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
+    clearTimerRef.current = setTimeout(() => setClearStatus({ complete: false, success: false }), 3000);
   };
 
   const handleSync = async () => {
     if (!isConnected) {
       setSyncStatus({ complete: true, success: false });
-      setTimeout(() => setSyncStatus({ complete: false, success: false }), 3000);
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+      syncTimerRef.current = setTimeout(() => setSyncStatus({ complete: false, success: false }), 3000);
       return;
     }
     const success = await syncRentalPeriods();
@@ -66,7 +79,14 @@ export default function SettingsScreen() {
                 {isSyncing ? (
                   <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <Text style={styles.buttonText}>{Translations.syncData}</Text>
+                  <View style={styles.syncButtonContent}>
+                    <Text style={styles.buttonText}>{Translations.syncData}</Text>
+                    {pendingOperationsCount > 0 && (
+                      <View style={styles.badge}>
+                        <Text style={styles.badgeText}>{pendingOperationsCount}</Text>
+                      </View>
+                    )}
+                  </View>
                 )}
               </TouchableOpacity>
 
@@ -166,6 +186,25 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     fontSize: 14,
     textAlign: 'center',
+  },
+  syncButtonContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  badge: {
+    backgroundColor: '#e74c3c',
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    paddingHorizontal: 6,
+    marginLeft: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  badgeText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '700',
   },
   statusText: {
     textAlign: 'center',
