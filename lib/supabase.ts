@@ -69,11 +69,12 @@ export async function setAdminSession(accessToken: string): Promise<void> {
   await AsyncStorage.setItem(ADMIN_JWT_KEY, accessToken);
   // Snapshot the current password_version at login time
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('app_config')
       .select('value')
       .eq('key', 'password_version')
       .single();
+    if (error) throw error;
     if (data?.value) {
       await AsyncStorage.setItem(PASSWORD_VERSION_KEY, data.value);
     } else {
@@ -103,11 +104,12 @@ export async function restoreAdminSession(): Promise<boolean> {
     // Check if the password has been changed since this session was created
     const storedVersion = await AsyncStorage.getItem(PASSWORD_VERSION_KEY);
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('app_config')
         .select('value')
         .eq('key', 'password_version')
         .single();
+      if (error) throw error;
       const remoteVersion = data?.value ?? '0';
       const localVersion = storedVersion ?? '0';
       if (remoteVersion !== localVersion) {
@@ -134,11 +136,12 @@ export async function validateAdminSession(): Promise<boolean> {
   if (!_adminToken) return false;
   try {
     const storedVersion = await AsyncStorage.getItem(PASSWORD_VERSION_KEY);
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('app_config')
       .select('value')
       .eq('key', 'password_version')
       .single();
+    if (error) throw error;
     const remoteVersion = data?.value ?? '0';
     const localVersion = storedVersion ?? '0';
     if (remoteVersion !== localVersion) {
