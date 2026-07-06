@@ -8,6 +8,7 @@ import {
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   StatusBar,
@@ -19,6 +20,7 @@ import {
 } from 'react-native';
 import HouseTasks from './components/HouseTasks';
 import { Translations } from './constants/Translations';
+import { useRefresh } from './context/RefreshContext';
 import { useRental } from './context/RentalContext';
 
 const { width, height } = Dimensions.get('window');
@@ -26,6 +28,7 @@ const { width, height } = Dimensions.get('window');
 export default function HouseScreen() {
   const { houseId: houseIdParam } = useLocalSearchParams<{ houseId: string }>();
   const houseId = houseIdParam ? parseInt(houseIdParam, 10) : 1;
+  const { refreshAll, isRefreshing } = useRefresh();
   const { houses, isHouseAvailable } = useRental();
   const router = useRouter();
 
@@ -85,7 +88,16 @@ export default function HouseScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContent} bounces={false}>
+      <ScrollView
+        contentContainerStyle={styles.scrollContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={refreshAll}
+            colors={['#3498db']}
+            tintColor="#3498db"
+          />
+        }>
 
         {/* Thumbnail gallery */}
         {hasImages ? (

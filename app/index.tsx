@@ -6,10 +6,12 @@ import { Alert, FlatList, RefreshControl, SafeAreaView, StyleSheet, Text, Toucha
 import HouseCard from './components/HouseCard';
 import { House } from './constants/Houses';
 import { Translations } from './constants/Translations';
+import { useRefresh } from './context/RefreshContext';
 import { useRental } from './context/RentalContext';
 
 export default function HousesScreen() {
-  const { houses, checkForOverlap, refreshHouses, isHousesLoading } = useRental();
+  const { houses, checkForOverlap } = useRental();
+  const { refreshAll, isRefreshing } = useRefresh();
   const router = useRouter();
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [startDate, setStartDate] = useState(new Date());
@@ -181,8 +183,8 @@ export default function HousesScreen() {
         contentContainerStyle={styles.listContent}
         refreshControl={
           <RefreshControl
-            refreshing={isHousesLoading}
-            onRefresh={refreshHouses}
+            refreshing={isRefreshing}
+            onRefresh={refreshAll}
             colors={['#3498db']}
             tintColor="#3498db"
           />

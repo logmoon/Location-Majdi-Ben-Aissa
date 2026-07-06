@@ -9,6 +9,7 @@ import SettingsButton from './components/SettingsButton';
 import { Translations } from './constants/Translations';
 import { NetworkProvider } from './context/NetworkContext';
 import { RentalProvider, useRental } from './context/RentalContext';
+import { RefreshProvider } from './context/RefreshContext';
 import { TaskProvider } from './context/TaskContext';
 import { pushTokenService } from './services/pushTokenService';
 
@@ -63,6 +64,7 @@ export default function Layout() {
       <ForceUpdateGate>
       <RentalProvider>
         <TaskProvider>
+          <RefreshProvider>
         <View style={{ flex: 1 }}>
           <PushTokenRehydrator />
           <OfflineIndicator />
@@ -105,6 +107,7 @@ export default function Layout() {
             />
           </Stack>
         </View>
+          </RefreshProvider>
         </TaskProvider>
       </RentalProvider>
       </ForceUpdateGate>

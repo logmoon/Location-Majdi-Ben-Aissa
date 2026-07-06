@@ -17,6 +17,7 @@ import {
 import RentalCalendar from './components/RentalCalendar';
 import RentalForm from './components/RentalForm';
 import { Translations } from './constants/Translations';
+import { useRefresh } from './context/RefreshContext';
 import { useRental } from './context/RentalContext';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -44,7 +45,8 @@ function buildMonthList(anchorMonth: number, anchorYear: number): MonthPage[] {
 
 export default function CalendarScreen() {
     const { houseId: houseIdParam } = useLocalSearchParams<{ houseId: string }>();
-    const { houses, isAdmin, syncRentalPeriods, isSyncing } = useRental();
+    const { refreshAll, isRefreshing } = useRefresh();
+    const { houses, isAdmin } = useRental();
 
     const houseId = houseIdParam ? parseInt(houseIdParam, 10) : 1;
     const selectedHouse = houses.find(h => h.id === houseId) || houses[0];
@@ -101,8 +103,8 @@ export default function CalendarScreen() {
     }, [isAdmin]);
 
     const handleRefresh = useCallback(async () => {
-        await syncRentalPeriods();
-    }, [syncRentalPeriods]);
+        await refreshAll();
+    }, [refreshAll]);
 
     const handleFormComplete = useCallback(() => {
         setShowForm(false);
@@ -166,10 +168,9 @@ export default function CalendarScreen() {
                 maxToRenderPerBatch={2}
                 initialNumToRender={3}
                 removeClippedSubviews={false}
-                bounces={false}
                 refreshControl={
                     <RefreshControl
-                        refreshing={isSyncing}
+                        refreshing={isRefreshing}
                         onRefresh={handleRefresh}
                         colors={['#3498db']}
                         tintColor="#3498db"
