@@ -76,8 +76,18 @@ export async function setAdminSession(accessToken: string): Promise<void> {
       .single();
     if (data?.value) {
       await AsyncStorage.setItem(PASSWORD_VERSION_KEY, data.value);
+    } else {
+      // No version in DB yet — store a sentinel so restoreAdminSession can
+      // correctly compare on next launch.
+      await AsyncStorage.setItem(PASSWORD_VERSION_KEY, '0');
     }
-  } catch (_) {}
+  } catch (_) {
+    // Fetch failed (network error during login).
+    // Store a marker so restoreAdminSession doesn't incorrectly think the
+    // version changed on next app start. Using a timestamp ensures any real
+    // value fetched later will differ, forcing a re-check.
+    await AsyncStorage.setItem(PASSWORD_VERSION_KEY, new Date().toISOString());
+  }
 }
 
 /**
@@ -150,5 +160,9 @@ export async function clearAdminSession(): Promise<void> {
   await AsyncStorage.removeItem(PASSWORD_VERSION_KEY);
 }
 
-const supabaseExport = { supabase, getAdminClient, setAdminSession, restoreAdminSession, clearAdminSession };
+export function hasAdminSession(): boolean {
+  return _adminToken !== null;
+}
+
+const supabaseExport = { supabase, getAdminClient, setAdminSession, restoreAdminSession, clearAdminSession, hasAdminSession };
 export default supabaseExport;
