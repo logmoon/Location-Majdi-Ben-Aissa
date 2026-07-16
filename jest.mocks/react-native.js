@@ -11,4 +11,8 @@ module.exports = {
   Alert: {
     alert: jest.fn(),
   },
+  AppState: {
+    addEventListener: jest.fn(() => ({ remove: jest.fn() })),
+    currentState: 'active',
+  },
 };

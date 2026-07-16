@@ -31,6 +31,7 @@ interface RentalContextType {
   syncRentalPeriods: () => Promise<boolean>;
   clearLocalData: () => Promise<boolean>;
   isSyncing: boolean;
+  lastSyncedAt: Date | null;
   pendingOperationsCount: number;
   checkForOverlap: (houseId: number, startDate: string, endDate: string, startHalfDay: boolean, endHalfDay: boolean, currentRentalId?: string) => boolean;
   refreshHouses: () => Promise<void>;
@@ -57,6 +58,7 @@ const RentalContext = createContext<RentalContextType>({
   syncRentalPeriods: async () => false,
   clearLocalData: async () => false,
   isSyncing: false,
+  lastSyncedAt: null,
   pendingOperationsCount: 0,
   checkForOverlap: () => false,
   refreshHouses: async () => {},
@@ -72,6 +74,7 @@ const RentalContext = createContext<RentalContextType>({
 const RENTAL_PERIODS_KEY = '@rental_app:rental_periods';
 const PENDING_OPERATIONS_KEY = '@rental_app:pending_operations';
 const HOUSES_CACHE_KEY = '@rental_app:houses_cache';
+const LAST_SYNCED_AT_KEY = '@rental_app:last_synced_at';
 
 // Pending operation types
 type OperationType = 'add' | 'update' | 'remove';
@@ -104,6 +107,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [isInitialized, setIsInitialized] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [pendingOperations, setPendingOperations] = useState<PendingOperation[]>([]);
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
   const rentalPeriodsRef = useRef(rentalPeriods);
   // Ref so processPendingOperations always reads the latest queue even from a stale closure
   const pendingOperationsRef = useRef(pendingOperations);
@@ -138,6 +142,12 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         const savedPendingOperations = await AsyncStorage.getItem(PENDING_OPERATIONS_KEY);
         if (savedPendingOperations !== null) {
           setPendingOperations(JSON.parse(savedPendingOperations));
+        }
+
+        // Load last successful sync time
+        const savedLastSyncedAt = await AsyncStorage.getItem(LAST_SYNCED_AT_KEY);
+        if (savedLastSyncedAt !== null) {
+          setLastSyncedAt(new Date(savedLastSyncedAt));
         }
         
         setIsInitialized(true);
@@ -476,6 +486,14 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     }
   };
 
+  // Record a successful round-trip with the backend, so the UI can give a
+  // quiet reassurance that syncing is actually working.
+  const markSyncSuccess = () => {
+    const now = new Date();
+    setLastSyncedAt(now);
+    AsyncStorage.setItem(LAST_SYNCED_AT_KEY, now.toISOString()).catch(() => {});
+  };
+
   // Sync with Supabase — callers are responsible for managing isSyncing
   const syncWithSupabase = async () => {
     if (!isConnected) return false;
@@ -510,6 +528,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       
       setRentalPeriods(mergedPeriods);
       await saveRentalPeriods(mergedPeriods);
+      markSyncSuccess();
       return true;
     } catch (error) {
       console.error('Error syncing with Supabase:', error);
@@ -902,12 +921,14 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       await AsyncStorage.removeItem(RENTAL_PERIODS_KEY);
       await AsyncStorage.removeItem(PENDING_OPERATIONS_KEY);
       await AsyncStorage.removeItem(HOUSES_CACHE_KEY);
+      await AsyncStorage.removeItem(LAST_SYNCED_AT_KEY);
       // Also clear the admin JWT so the session is fully reset
       await clearAdminSession();
       setIsAdminState(false);
       
       setRentalPeriods([]);
       setPendingOperations([]);
+      setLastSyncedAt(null);
       
       return true;
     } catch (error) {
@@ -932,6 +953,7 @@ export const RentalProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         syncRentalPeriods,
         clearLocalData,
         isSyncing,
+        lastSyncedAt,
         pendingOperationsCount: pendingOperations.length,
         checkForOverlap,
         refreshHouses,

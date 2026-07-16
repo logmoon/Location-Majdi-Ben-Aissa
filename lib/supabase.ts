@@ -23,12 +23,30 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+// A phone can be associated to WiFi/cellular while having no real route to
+// the internet (router down, weak signal, captive portal, etc). Without a
+// hard timeout, requests in that state can hang far longer than expected
+// instead of failing, which prevents the retry/backoff logic in the
+// service layer from ever getting a chance to run and leaves pending
+// operations stuck with nothing visibly happening. This wraps fetch with
+// an AbortController-based timeout so requests fail fast and predictably.
+const REQUEST_TIMEOUT_MS = 15000;
+
+const fetchWithTimeout: typeof fetch = (input, init) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+};
+
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     storage: AsyncStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
+  },
+  global: {
+    fetch: fetchWithTimeout,
   },
 });
 
@@ -52,6 +70,7 @@ export function getAdminClient() {
       headers: {
         Authorization: `Bearer ${_adminToken}`,
       },
+      fetch: fetchWithTimeout,
     },
     auth: {
       persistSession: false,

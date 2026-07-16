@@ -10,7 +10,7 @@ import { useNetwork } from './context/NetworkContext';
 import { useRental } from './context/RentalContext';
 
 export default function SettingsScreen() {
-  const { isAdmin, syncRentalPeriods, isSyncing, pendingOperationsCount } = useRental();
+  const { isAdmin, syncRentalPeriods, isSyncing, pendingOperationsCount, lastSyncedAt } = useRental();
   const { isConnected } = useNetwork();
 
   const [syncStatus, setSyncStatus] = useState<{ complete: boolean; success: boolean }>({ complete: false, success: false });
@@ -37,6 +37,14 @@ export default function SettingsScreen() {
     setClearStatus({ complete: true, success });
     if (clearTimerRef.current) clearTimeout(clearTimerRef.current);
     clearTimerRef.current = setTimeout(() => setClearStatus({ complete: false, success: false }), 3000);
+  };
+
+  const formatLastSynced = (date: Date) => {
+    const isToday = date.toDateString() === new Date().toDateString();
+    const time = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    if (isToday) return `${Translations.lastSync} : ${time}`;
+    const day = date.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+    return `${Translations.lastSync} : ${day} à ${time}`;
   };
 
   const handleSync = async () => {
@@ -107,6 +115,10 @@ export default function SettingsScreen() {
 
             {!isConnected && (
               <Text style={styles.offlineText}>{Translations.offlineNoSync}</Text>
+            )}
+
+            {isConnected && !syncStatus.complete && lastSyncedAt && (
+              <Text style={styles.lastSyncText}>{formatLastSynced(lastSyncedAt)}</Text>
             )}
           </View>
         )}
@@ -222,6 +234,12 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 8,
     fontSize: 14,
+  },
+  lastSyncText: {
+    color: '#999',
+    textAlign: 'center',
+    marginTop: 8,
+    fontSize: 12,
   },
   footer: {
     padding: 16,

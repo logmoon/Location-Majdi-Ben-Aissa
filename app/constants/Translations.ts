@@ -73,6 +73,7 @@ export const Translations = {
   dataManagement: 'Gestion des données',
   syncData: 'Synchroniser',
   offlineNoSync: 'Synchronisation impossible en mode hors ligne',
+  lastSync: 'Dernière synchronisation',
   
   // Network
   offlineWarning: 'Vous êtes hors ligne. Les données affichées peuvent ne pas être à jour.',
