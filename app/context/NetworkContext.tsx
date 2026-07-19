@@ -1,6 +1,7 @@
 import NetInfo from '@react-native-community/netinfo';
 import React, { createContext, ReactNode, useContext, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
+import { deriveConnected, withTimeout } from '../../lib/networkLogic';
 
 interface NetworkContextType {
   isConnected: boolean | null;
@@ -25,18 +26,17 @@ const NetworkContext = createContext<NetworkContextType>({
 // would never retry a pending sync.
 const POLL_INTERVAL_MS = 15000;
 
-// Derives an effective "are we actually online" boolean from a NetInfo
-// state snapshot. `isConnected` only reflects radio-level association
-// (has a WiFi/cellular link); `isInternetReachable` reflects whether that
-// link actually reaches the internet (NetInfo performs a reachability
-// probe for this). We require both, and only treat `isInternetReachable
-// === false` as a hard "no" — while it's `null` (still being determined)
-// we fall back to `isConnected` so we don't flicker offline on every check.
-function deriveConnected(state: { isConnected: boolean | null; isInternetReachable: boolean | null }): boolean {
-  if (state.isConnected !== true) return false;
-  if (state.isInternetReachable === false) return false;
-  return true;
-}
+// NetInfo.fetch()'s reachability probe is itself a network operation, and on
+// some devices (older Android builds / OEM network stacks in particular) it
+// can hang indefinitely instead of resolving or rejecting when the network
+// is in a bad state — the exact situation this probe exists to detect.
+// Every other network call in this app (Supabase fetches, sync operations)
+// is wrapped in a timeout for this reason; this one previously wasn't. If it
+// hangs, checkInFlightRef below never clears, which silently disables every
+// future poll tick, every foreground re-check, AND the manual retry button —
+// freezing isConnected forever and starving auto-sync/manual sync of any way
+// to ever re-fire. This timeout guarantees checkConnection always completes.
+const CHECK_TIMEOUT_MS = 10000;
 
 export const NetworkProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   // Start as null (unknown) — we don't know connectivity until NetInfo responds.
@@ -55,7 +55,7 @@ export const NetworkProvider: React.FC<{ children: ReactNode }> = ({ children })
     checkInFlightRef.current = true;
     setIsCheckingConnection(true);
     try {
-      const state = await NetInfo.fetch();
+      const state = await withTimeout(NetInfo.fetch(), CHECK_TIMEOUT_MS, 'NetInfo.fetch()');
       const connected = deriveConnected(state);
 
       setIsConnected(connected);
@@ -66,6 +66,12 @@ export const NetworkProvider: React.FC<{ children: ReactNode }> = ({ children })
 
       return connected;
     } catch (error) {
+      // Either a real NetInfo error, or our timeout fired because the
+      // underlying probe hung — either way we can't confirm connectivity,
+      // so fail closed to offline. Falling through to `finally` (rather
+      // than getting stuck) is the whole point: it guarantees
+      // checkInFlightRef/isCheckingConnection always get released so the
+      // next poll tick, foreground resume, or manual retry tap can try again.
       console.error('Error checking connection:', error);
       setIsConnected(false);
       return false;

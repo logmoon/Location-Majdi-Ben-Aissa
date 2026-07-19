@@ -32,6 +32,13 @@ const RentalForm: React.FC<RentalFormProps> = ({
   // State for date picker
   const [showStartDatePicker, setShowStartDatePicker] = useState(false);
   const [showEndDatePicker, setShowEndDatePicker] = useState(false);
+  // Guards against double submission: addRentalPeriod/updateRentalPeriod can
+  // take up to ~48s in the worst case (Supabase retries on a flaky
+  // connection). Without this, the Save button stays fully tappable the
+  // whole time with no visual feedback, and rentalPeriods state doesn't
+  // reflect the in-flight rental yet — so a frustrated second tap sails
+  // straight past checkForOverlap and creates a duplicate booking.
+  const [saving, setSaving] = useState(false);
   
   // Initialize form with initial values if provided
   useEffect(() => {
@@ -104,6 +111,8 @@ const RentalForm: React.FC<RentalFormProps> = ({
 
   // Handle form submission
   const handleSubmit = async () => {
+    if (saving) return; // already in flight — ignore extra taps
+
     // Validate inputs
     if (!renterName.trim()) {
       Alert.alert(Translations.error, 'Nom du locataire requis');
@@ -128,31 +137,36 @@ const RentalForm: React.FC<RentalFormProps> = ({
       endHalfDay,   // Add half-day check-out option
     };
     
-    if (initialRental) {
-      // Update existing rental - include id and tempId if they exist
-      if (initialRental.id) {
-        rentalData.id = initialRental.id;
-      }
-      if (initialRental.tempId) {
-        rentalData.tempId = initialRental.tempId;
-      }
-      const updateSuccess = await updateRentalPeriod(rentalData);
-      
-      if (updateSuccess) {
-        Alert.alert(Translations.success, 'Location modifiée avec succès');
-        onComplete();
+    setSaving(true);
+    try {
+      if (initialRental) {
+        // Update existing rental - include id and tempId if they exist
+        if (initialRental.id) {
+          rentalData.id = initialRental.id;
+        }
+        if (initialRental.tempId) {
+          rentalData.tempId = initialRental.tempId;
+        }
+        const updateSuccess = await updateRentalPeriod(rentalData);
+
+        if (updateSuccess) {
+          Alert.alert(Translations.success, 'Location modifiée avec succès');
+          onComplete();
+        } else {
+          Alert.alert(Translations.error, 'Une ou plusieurs dates dans cette période sont déjà réservées');
+        }
       } else {
-        Alert.alert(Translations.error, 'Une ou plusieurs dates dans cette période sont déjà réservées');
+        // Add new rental period
+        const addSuccess = await addRentalPeriod(rentalData);
+        if (addSuccess) {
+          Alert.alert(Translations.success, 'Location ajoutée avec succès');
+          onComplete();
+        } else {
+          Alert.alert(Translations.error, 'Une ou plusieurs dates dans cette période sont déjà réservées');
+        }
       }
-    } else {
-      // Add new rental period
-      const addSuccess = await addRentalPeriod(rentalData);
-      if (addSuccess) {
-        Alert.alert(Translations.success, 'Location ajoutée avec succès');
-        onComplete();
-      } else {
-        Alert.alert(Translations.error, 'Une ou plusieurs dates dans cette période sont déjà réservées');
-      }
+    } finally {
+      setSaving(false);
     }
   };
   
@@ -252,12 +266,12 @@ const RentalForm: React.FC<RentalFormProps> = ({
       </View>
       
       <View style={styles.buttonRow}>
-        <TouchableOpacity style={styles.cancelButton} onPress={onComplete}>
+        <TouchableOpacity style={styles.cancelButton} onPress={onComplete} disabled={saving}>
           <Text style={styles.buttonText}>{Translations.cancel}</Text>
         </TouchableOpacity>
         
-        <TouchableOpacity style={styles.saveButton} onPress={handleSubmit}>
-          <Text style={styles.buttonText}>{Translations.save}</Text>
+        <TouchableOpacity style={styles.saveButton} onPress={handleSubmit} disabled={saving}>
+          <Text style={styles.buttonText}>{saving ? 'Enregistrement...' : Translations.save}</Text>
         </TouchableOpacity>
       </View>
     </View>

@@ -2,7 +2,11 @@
  * adminAuthService tests
  *
  * Mocks:
- *   - global fetch  → controls Edge Function responses
+ *   - fetchWithTimeout (from lib/supabase) → controls Edge Function responses.
+ *     adminAuthService uses this timeout-guarded wrapper instead of raw
+ *     fetch() so a hung connection can't leave the login button stuck
+ *     forever — see lib/supabase.ts. Mocking it here (rather than global
+ *     fetch) exercises the same call path production code actually takes.
  *   - supabase.ts   → verifies setAdminSession / clearAdminSession are called
  */
 
@@ -10,18 +14,15 @@
 
 const mockSetAdminSession = jest.fn().mockResolvedValue(undefined);
 const mockClearAdminSession = jest.fn().mockResolvedValue(undefined);
+const mockFetch = jest.fn();
 
 jest.mock('../lib/supabase', () => ({
   supabase: {},
   setAdminSession: mockSetAdminSession,
   clearAdminSession: mockClearAdminSession,
+  fetchWithTimeout: mockFetch,
   default: {},
 }));
-
-// ─── Mock global fetch ────────────────────────────────────────────────────────
-
-const mockFetch = jest.fn();
-global.fetch = mockFetch;
 
 // ─── Import after mocks ───────────────────────────────────────────────────────
 
@@ -139,6 +140,23 @@ describe('adminAuthService.login', () => {
 
     await adminAuthService.login('pass');
 
+    expect(mockSetAdminSession).not.toHaveBeenCalled();
+  });
+
+  it('returns network_error (rather than hanging) if the request times out', async () => {
+    // fetchWithTimeout (lib/supabase.ts) rejects on its own once the
+    // AbortController timeout fires — simulate that here rather than a
+    // promise that never settles, since login() awaits it directly and a
+    // truly-never-settling mock would hang this test too. The real timeout
+    // mechanics (AbortController firing after 15s) are lib/supabase.ts's
+    // responsibility and aren't re-tested here; this test only confirms
+    // adminAuthService handles that rejection the same way as any other
+    // network failure — falling through to network_error, not hanging.
+    mockFetch.mockRejectedValueOnce(new Error('The user aborted a request.'));
+
+    const result = await adminAuthService.login('any-password');
+
+    expect(result).toEqual({ success: false, error: 'network_error' });
     expect(mockSetAdminSession).not.toHaveBeenCalled();
   });
 });

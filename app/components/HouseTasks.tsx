@@ -46,6 +46,7 @@ const TaskFormModal: React.FC<TaskFormModalProps> = ({ visible, houseId, editing
   const [category, setCategory] = useState<TaskCategory>(editingTask?.category ?? 'cleaning');
   const [description, setDescription] = useState(editingTask?.description ?? '');
   const [isUrgent, setIsUrgent] = useState(editingTask?.isUrgent ?? false);
+  const [saving, setSaving] = useState(false);
 
   // Reset form when modal opens with new data
   React.useEffect(() => {
@@ -53,28 +54,36 @@ const TaskFormModal: React.FC<TaskFormModalProps> = ({ visible, houseId, editing
       setCategory(editingTask?.category ?? 'cleaning');
       setDescription(editingTask?.description ?? '');
       setIsUrgent(editingTask?.isUrgent ?? false);
+      setSaving(false);
     }
   }, [visible, editingTask]);
 
   const handleSave = async () => {
+    if (saving) return; // already in flight — ignore extra taps
+
     if (!description.trim()) {
       Alert.alert('Erreur', 'La description est requise.');
       return;
     }
 
-    if (editingTask?.id ?? editingTask?.tempId) {
-      await updateTask(editingTask.id ?? editingTask.tempId ?? '', { category, description: description.trim(), isUrgent });
-    } else {
-      await addTask({
-        houseId,
-        category,
-        description: description.trim(),
-        isUrgent,
-        isDone: false,
-        rentalPeriodId: null,
-      });
+    setSaving(true);
+    try {
+      if (editingTask?.id ?? editingTask?.tempId) {
+        await updateTask(editingTask.id ?? editingTask.tempId ?? '', { category, description: description.trim(), isUrgent });
+      } else {
+        await addTask({
+          houseId,
+          category,
+          description: description.trim(),
+          isUrgent,
+          isDone: false,
+          rentalPeriodId: null,
+        });
+      }
+      onClose();
+    } finally {
+      setSaving(false);
     }
-    onClose();
   };
 
   return (
@@ -136,11 +145,11 @@ const TaskFormModal: React.FC<TaskFormModalProps> = ({ visible, houseId, editing
 
           {/* Buttons */}
           <View style={modalStyles.buttonRow}>
-            <TouchableOpacity style={modalStyles.cancelBtn} onPress={onClose}>
+            <TouchableOpacity style={modalStyles.cancelBtn} onPress={onClose} disabled={saving}>
               <Text style={modalStyles.cancelBtnText}>Annuler</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={modalStyles.saveBtn} onPress={handleSave}>
-              <Text style={modalStyles.saveBtnText}>Enregistrer</Text>
+            <TouchableOpacity style={modalStyles.saveBtn} onPress={handleSave} disabled={saving}>
+              <Text style={modalStyles.saveBtnText}>{saving ? 'Enregistrement...' : 'Enregistrer'}</Text>
             </TouchableOpacity>
           </View>
         </View>

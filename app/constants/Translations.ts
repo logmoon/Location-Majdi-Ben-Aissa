@@ -68,6 +68,13 @@ export const Translations = {
   syncError: 'Erreur de synchronisation',
   clearData: 'Effacer les données',
   clearDataConfirm: 'Êtes-vous sûr de vouloir effacer toutes les données locales?',
+  // Shown instead of clearDataConfirm when there are unsynced local changes —
+  // makes explicit that this specific action permanently destroys exactly
+  // the changes that haven't made it to the server yet, since a stuck sync
+  // is exactly the situation that tempts someone to reach for "clear data"
+  // as a fix, right when doing so would be most destructive.
+  clearDataConfirmWithPending: (count: number) =>
+    `Attention : ${count} modification${count > 1 ? 's' : ''} locale${count > 1 ? 's' : ''} n'${count > 1 ? 'ont' : 'a'} pas encore été synchronisée${count > 1 ? 's' : ''} avec le serveur.\n\nEffacer les données locales supprimera définitivement ${count > 1 ? 'ces modifications' : 'cette modification'}. Cette action est irréversible.\n\nVoulez-vous vraiment continuer ?`,
   clearSuccess: 'Données effacées avec succès',
   clearError: 'Erreur lors de l\'effacement des données',
   dataManagement: 'Gestion des données',

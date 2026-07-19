@@ -32,7 +32,7 @@ if (!supabaseUrl || !supabaseAnonKey) {
 // an AbortController-based timeout so requests fail fast and predictably.
 const REQUEST_TIMEOUT_MS = 15000;
 
-const fetchWithTimeout: typeof fetch = (input, init) => {
+export const fetchWithTimeout: typeof fetch = (input, init) => {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
@@ -186,5 +186,5 @@ export function hasAdminSession(): boolean {
   return _adminToken !== null;
 }
 
-const supabaseExport = { supabase, getAdminClient, setAdminSession, restoreAdminSession, clearAdminSession, hasAdminSession };
+const supabaseExport = { supabase, getAdminClient, setAdminSession, restoreAdminSession, clearAdminSession, hasAdminSession, fetchWithTimeout };
 export default supabaseExport;

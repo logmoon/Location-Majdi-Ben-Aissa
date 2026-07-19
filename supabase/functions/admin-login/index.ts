@@ -18,13 +18,21 @@
  *     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
  *
  * Required environment variables (set in Supabase dashboard → Edge Functions → Secrets):
- *   SUPABASE_JWT_SECRET — auto-injected by Supabase, used to sign the JWT so PostgREST
- *                         can verify it and populate request.jwt.claims for RLS
- *   SUPABASE_URL      — auto-injected by Supabase
- *   SUPABASE_SERVICE_ROLE_KEY — auto-injected by Supabase
+ *   JWT_SECRET                — MUST be manually set to the exact value of your project's
+ *                               JWT secret (Dashboard → Settings → API → JWT Secret). This is
+ *                               NOT auto-injected: Supabase reserves the "SUPABASE_" prefix for
+ *                               its own auto-injected vars (SUPABASE_URL, SUPABASE_ANON_KEY,
+ *                               SUPABASE_SERVICE_ROLE_KEY, SUPABASE_DB_URL) and rejects attempts
+ *                               to manually set a secret named SUPABASE_JWT_SECRET — hence the
+ *                               plain "JWT_SECRET" name here for the manually-copied value.
+ *   SUPABASE_URL               — auto-injected by Supabase
+ *   SUPABASE_SERVICE_ROLE_KEY  — auto-injected by Supabase
  *
- * NOTE: Do NOT use a custom ADMIN_JWT_SECRET. PostgREST validates JWTs against
- * SUPABASE_JWT_SECRET — a different secret will cause PGRST301 errors.
+ * NOTE: JWT_SECRET's value must exactly match the project's real JWT secret shown in the
+ * dashboard, or PostgREST will reject every token this function issues with a PGRST301 error
+ * on the very next request — i.e. login would appear to succeed here, but every subsequent
+ * "admin" write (rentals, houses, tasks) would then silently fail. If JWT_SECRET is ever
+ * rotated in the dashboard, this Edge Function secret must be updated to match.
  */
 
 import { create } from 'https://deno.land/x/djwt@v3.0.2/mod.ts';
@@ -83,12 +91,11 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Sign a JWT valid for 7 days using Supabase's own JWT secret.
-    // PostgREST validates JWTs against this secret before populating
-    // request.jwt.claims — so we MUST use it, not a custom secret.
+    // Sign a JWT valid for 7 days using the project's real JWT secret (copied
+    // manually into the JWT_SECRET function secret — see header comment for why).
     const jwtSecret = Deno.env.get('JWT_SECRET');
     if (!jwtSecret) {
-      console.error('[admin-login] SUPABASE_JWT_SECRET not set');
+      console.error('[admin-login] JWT_SECRET not set');
       return new Response(
         JSON.stringify({ error: 'Server configuration error' }),
         { status: 500, headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' } }

@@ -98,7 +98,7 @@ export default function SettingsScreen() {
                 )}
               </TouchableOpacity>
 
-              <ClearDataButton onClearComplete={handleClearComplete} />
+              <ClearDataButton onClearComplete={handleClearComplete} pendingOperationsCount={pendingOperationsCount} />
             </View>
 
             {syncStatus.complete && (

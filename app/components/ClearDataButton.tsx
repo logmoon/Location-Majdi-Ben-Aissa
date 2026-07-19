@@ -6,24 +6,31 @@ import { Translations } from '../constants/Translations';
 
 interface ClearDataButtonProps {
   onClearComplete?: (success: boolean) => void;
+  pendingOperationsCount?: number;
 }
 
-const ClearDataButton: React.FC<ClearDataButtonProps> = ({ onClearComplete }) => {
+const ClearDataButton: React.FC<ClearDataButtonProps> = ({ onClearComplete, pendingOperationsCount = 0 }) => {
   const { clearLocalData } = useRental();
   const [isClearing, setIsClearing] = useState(false);
 
   const handleClearData = async () => {
-    // Show confirmation dialog
+    const hasPendingChanges = pendingOperationsCount > 0;
+
+    // When there are unsynced local changes, clearing data destroys them
+    // permanently — use an explicit, count-specific warning instead of the
+    // generic confirmation so this can't be mistaken for a harmless reset.
     Alert.alert(
       Translations.clearData,
-      Translations.clearDataConfirm,
+      hasPendingChanges
+        ? Translations.clearDataConfirmWithPending(pendingOperationsCount)
+        : Translations.clearDataConfirm,
       [
         {
           text: Translations.cancel,
           style: 'cancel'
         },
         {
-          text: Translations.confirm,
+          text: hasPendingChanges ? 'Supprimer quand même' : Translations.confirm,
           style: 'destructive',
           onPress: async () => {
             setIsClearing(true);

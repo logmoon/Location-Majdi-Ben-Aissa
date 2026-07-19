@@ -9,7 +9,7 @@
  */
 
 import Constants from 'expo-constants';
-import { clearAdminSession, setAdminSession } from '../../lib/supabase';
+import { clearAdminSession, fetchWithTimeout, setAdminSession } from '../../lib/supabase';
 
 // Edge Function URL — derived from the Supabase project URL
 const supabaseUrl: string =
@@ -35,7 +35,11 @@ export const adminAuthService = {
    */
   async login(password: string): Promise<LoginResult> {
     try {
-      const response = await fetch(ADMIN_LOGIN_URL, {
+      // Uses the same timeout-guarded fetch as the rest of the app (see
+      // lib/supabase.ts) — a raw fetch() here could hang indefinitely on a
+      // flaky connection, leaving the login button stuck in its loading
+      // state forever with no way to retry.
+      const response = await fetchWithTimeout(ADMIN_LOGIN_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
